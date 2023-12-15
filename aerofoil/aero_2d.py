@@ -1,73 +1,93 @@
-# Import necessary libraries
 import modulus as md
+import modulus.sym as ms
 import tensorflow as tf
 import numpy as np
-import ParaView as pv
+from paraview import pv
 
-# Define target wind speed
+# Target wind speed and lift coefficient
 V_inf = 40  # m/s
+target_lift = 1.3  # Adjust based on desired lift performance
 
-# Airfoil parameterization (B-spline)
-control_points = np.array([[0.2, 0.3], [0.15, 0.4], [0.1, 0.5], [0.05, 0.6], [0, 0.7]])
-airfoil_fn = lambda p: md.bspline.construct_airfoil(p, control_points)
+# Symbolic airfoil parameters
+x, y = ms.symbols("x y")
+alpha = ms.symbols("alpha")  # Additional parameter for controlling shape (e.g., camber)
 
-# Define inviscid flow equations
+# Define symbolic airfoil geometry
+airfoil_fn = ms.Function(
+    y,
+    ms.sin(alpha) * ms.cos(ms.pi * x) + 0.5,  # Example: NACA-like shape
+    domain=ms.Interval(0, 1),
+)
+
+# Define inviscid flow equations symbolically
 equations = md.inviscid.euler_2d()
+equations.substitute({"u_inf": V_inf})
 
-# Loss function components
-def lift_loss(y):
-    u, v = y[..., :2]
-    lift = md.integrals.lift(u, v)
-    target_lift = 1.2
-    return tf.reduce_mean(tf.square(lift - target_lift))
+# Symbolic loss function components
+lift_loss = md.integrals.lift(equations.u, equations.v) - target_lift
+lift_loss = ms.integrate(lift_loss, x, 0, 1) ** 2
 
-def pressure_loss(y):
-    p = y[..., -1]
-    pressure_grad = md.gradients.grad_x(p)
-    return tf.reduce_mean(tf.square(pressure_grad))
+pressure_loss = md.gradients.grad_x(equations.p) ** 2
+pressure_loss = ms.integrate(pressure_loss, x, 0, 1) ** 2
 
-# Combine loss components with weights
-loss_fn = lift_loss(y) + 0.01 * pressure_loss(y)
+# Combined loss function
+loss_fn = lift_loss + 0.1 * pressure_loss
 
-# PINN model
-initial_guess = tf.zeros_like(equations.y_init(airfoil_fn))
+# PINN model with initial guess
+initial_guess = md.sym.zeros_like(equations.y_init(airfoil_fn))
 model = md.PINN(equations, loss_fn, initial_guess)
 
 # Optimizer and training parameters
 optimizer = tf.optimizers.Adam(learning_rate=0.001)
-epochs = 2000
+max_iter = 2000  # Adjust training iterations as needed
 
-# Train the PINNs
-for epoch in range(epochs):
+# Store pressure map and parameter history for visualization
+pressure_maps = []
+parameter_history = [(alpha.eval(),)]
+
+# Training loop with visualization
+for i in range(max_iter):
     with tf.GradientTape() as tape:
-        loss = model.loss(airfoil_fn(control_points))
+        loss = model.loss(airfoil_fn(alpha))
     grads = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-# Analyze and optimize
-# ... Implement code for analyzing lift coefficient, etc.
-# ... Use results to refine airfoil parameterization
-# ... Repeat training loop for improved performance
+    # Generate and store pressure map
+    y_predicted = model(airfoil_fn(alpha))
+    pressure_maps.append(y_predicted[..., -1])
 
-# Visualize flow around the optimized airfoil
-def visualize_flow(airfoil, velocity, pressure):
-    scene = pv.OpenDocument()
-    reader = pv.LegacyUnstructuredGridReader()
-    reader.OnRead = md.visualization.pv_read_airfoil_flow(airfoil)
-    scene.Sources.Add(reader)
+    # Update parameter and history for next iteration
+    # ... Implement your logic for updating alpha based on lift or pressure gradient
+    # (e.g., gradient ascent towards target lift)
+    alpha = ...  # Update alpha based on your optimization strategy
 
-    scene.Sources[0].SetPointArrays({"velocity": velocity, "pressure": pressure})
+    parameter_history.append((alpha.eval(),))
 
-    pv.SetActiveSource(scene.Sources[0])
-    pv.Render()
+    # Visualization
+    if i % 50 == 0:
+        pv.OpenDocument()
+        reader = pv.UnstructuredGridReader()
+        reader.OnRead = md.visualization.pv_read_airfoil_data(airfoil_fn(alpha))
+        pv.SourceManager.Sources.Add(reader)
+        reader.SetPointArrays({"pressure": pressure_maps[-1]})
+        pv.Render()
 
-    # ... Add plots for velocity magnitude, pressure contours, etc.
-    # ... Adjust colors, ranges, and other visual properties
+        # ... Add additional plots for velocity, pressure contours, etc.
+        # ... Adjust colors, ranges, and other visual properties
 
-y_predicted = model(airfoil_fn(control_points))
-velocity, pressure = y_predicted[..., :2], y_predicted[..., -1]
-visualize_flow(optimized_airfoil, velocity, pressure)
+        pv.CloseDocument()
 
-# Export optimized airfoil geometry
-md.utils.write_airfoil_mesh(optimized_airfoil, "optimized_airfoil.xdmf")
+# Output optimized design components
+# 1. Airfoil coordinates:
+optimized_coordinates = md.utils.discretize_airfoil(airfoil_fn(alpha.eval()))
+with open("optimized_airfoil.txt", "w") as f:
+    for x, y in optimized_coordinates:
+        f.write(f"{x:.4f} {y:.4f}\n")
+
+# 2. Optimal symbolic parameter:
+print(f"Optimal alpha: {alpha.eval():.4f}")
+
+# 3. Final pressure map (optional):
+final_pressure_map = model(airfoil_fn(alpha.eval()))[..., -1]
+md.utils.export_array("optimized_pressure.xdmf", final_pressure_map.numpy())
 
