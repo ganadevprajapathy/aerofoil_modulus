@@ -171,6 +171,27 @@ def run(cfg: ModulusConfig) -> None:
     # start solver
     slv.solve()
 
+    # Extract predicted velocity and pressure
+    u, v, p = slv.get_output(key_list=["u", "v", "p"])
+
+    # Option 1: Generate a single image using matplotlib
+    # Define grid points for visualization
+    x_grid, y_grid = torch.linspace(-width / 2, width / 2, 256), torch.linspace(-height / 2, height / 2, 256)
+    u_grid, v_grid, p_grid = slv.evaluate_output(key_list=["u", "v", "p"], invar=torch.stack([x_grid, y_grid]))
+
+    # Create and save velocity plot
+    plt.figure(figsize=(10, 5))
+    plt.streamplot(x_grid, y_grid, u_grid, v_grid, density=2)
+    plt.title("Velocity Field")
+    plt.savefig("cavity_flow_velocity.png")
+
+    # Create and save pressure plot
+    plt.figure(figsize=(10, 5))
+    plt.contourf(x_grid, y_grid, p_grid)
+    plt.title("Pressure Field")
+    plt.colorbar()
+    plt.savefig("cavity_flow_pressure.png")
+
 
 if __name__ == "__main__":
     run()
